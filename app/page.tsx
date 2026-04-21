@@ -13,25 +13,48 @@ import {
 } from "@/types";
 
 export default function Home() {
-  const [transcriptChunks, setTranscriptChunks] = useState<TranscriptChunk[]>([]);
+  const [transcriptChunks, setTranscriptChunks] =
+    useState<TranscriptChunk[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [suggestionBatches, setSuggestionBatches] = useState<SuggestionBatch[]>([]);
+  const [suggestionBatches, setSuggestionBatches] =
+    useState<SuggestionBatch[]>([]);
 
   const [isRecording, setIsRecording] = useState(false);
 
-  // 🧠 MEMORY
   const [memory, setMemory] = useState({
     summary: "",
     topics: [],
     lastUpdated: 0,
   });
 
-  // 🔥 SETTINGS
   const [settings, setSettings] = useState({
     apiKey: "",
-    suggestionPrompt: "Generate sharp, non-generic suggestions.",
-    expandPrompt: "Expand naturally, max 3 sentences, no fluff.",
-    chatPrompt: "Answer clearly, concisely, max 3 sentences.",
+    suggestionPrompt: `
+Generate highly relevant, context-aware suggestions.
+
+Focus on:
+- What is unclear
+- What decision is being made
+- What action should happen next
+
+Avoid generic suggestions.
+Each suggestion must be specific to the conversation.
+`,
+    expandPrompt: `
+Convert this into something I can say in a meeting.
+
+- Natural spoken tone
+- Confident
+- Max 3 sentences
+- No fluff
+`,
+    chatPrompt: `
+Answer clearly and concisely.
+
+- Max 3 sentences
+- Focus on what matters now
+- No unnecessary explanation
+`,
     suggestionContext: 3,
     chatContext: 6,
   });
@@ -64,7 +87,7 @@ export default function Home() {
     });
   }, []);
 
-  // ✅ EXPORT JSON
+  // ✅ EXPORT JSON (unchanged)
   const handleExport = useCallback(() => {
     const data = {
       metadata: {
@@ -89,14 +112,38 @@ export default function Home() {
     URL.revokeObjectURL(url);
   }, [transcriptChunks, suggestionBatches, messages, memory, settings]);
 
-  // ✅ EXPORT TEXT
+  // 🔥 FIXED EXPORT TEXT (WITH SUGGESTIONS)
   const handleExportText = useCallback(() => {
     let text = "=== TRANSCRIPT ===\n\n";
 
+    // 📝 TRANSCRIPT
     transcriptChunks.forEach((t) => {
       text += `[${new Date(t.timestamp).toLocaleTimeString()}] ${t.text}\n\n`;
     });
 
+    // 💡 SUGGESTIONS
+    text += "\n=== SUGGESTIONS ===\n\n";
+
+    if (suggestionBatches.length === 0) {
+      text += "No suggestions generated.\n\n";
+    } else {
+      suggestionBatches.forEach((batch, batchIndex) => {
+        text += `--- Batch ${batchIndex + 1} (${new Date(
+          batch.timestamp
+        ).toLocaleTimeString()}) ---\n\n`;
+
+        batch.items.forEach((s, i) => {
+          text += `(${i + 1}) [${s.type.toUpperCase()}]\n`;
+          text += `Preview: ${s.preview}\n`;
+          text += `Full: ${s.full}\n`;
+          text += `Score: ${s.score}\n\n`;
+        });
+
+        text += "-----------------------------\n\n";
+      });
+    }
+
+    // 💬 CHAT
     text += "\n=== CHAT ===\n\n";
 
     messages.forEach((m) => {
@@ -112,7 +159,7 @@ export default function Home() {
     a.click();
 
     URL.revokeObjectURL(url);
-  }, [transcriptChunks, messages]);
+  }, [transcriptChunks, suggestionBatches, messages]);
 
   if (!settingsReady) {
     return (
@@ -125,19 +172,16 @@ export default function Home() {
   return (
     <div className="h-screen bg-black text-white overflow-hidden flex flex-col relative">
 
-      {/* CLEAR BUTTON */}
       <button
         onClick={handleClear}
-        className="absolute top-4 left-4 bg-red-600 px-3 py-1 rounded hover:bg-red-500 z-20"
+        className="absolute top-4 left-4 bg-red-600 px-3 py-1 rounded hover:bg-red-500 z-20 text-sm"
       >
         Clear
       </button>
 
-      {/* 🔥 CRITICAL FIX: min-h-0 */}
-      <div className="flex-1 grid grid-cols-4 gap-4 p-4 min-h-0">
+      <div className="flex-1 grid grid-cols-4 gap-4 p-4 min-h-0 overflow-hidden">
 
-        {/* TRANSCRIPT */}
-        <div className="flex flex-col min-h-0">
+        <div className="flex flex-col min-h-0 overflow-hidden">
           <TranscriptPanel
             transcriptChunks={transcriptChunks}
             setTranscriptChunks={setTranscriptChunks}
@@ -147,8 +191,7 @@ export default function Home() {
           />
         </div>
 
-        {/* SUGGESTIONS */}
-        <div className="flex flex-col min-h-0">
+        <div className="flex flex-col min-h-0 overflow-hidden">
           <SuggestionsPanel
             transcriptChunks={transcriptChunks}
             messages={messages}
@@ -162,8 +205,7 @@ export default function Home() {
           />
         </div>
 
-        {/* CHAT */}
-        <div className="flex flex-col min-h-0">
+        <div className="flex flex-col min-h-0 overflow-hidden">
           <ChatPanel
             messages={messages}
             setMessages={setMessages}
@@ -174,8 +216,7 @@ export default function Home() {
           />
         </div>
 
-        {/* SETTINGS */}
-        <div className="flex flex-col min-h-0">
+        <div className="flex flex-col min-h-0 overflow-hidden">
           <SettingsPanel
             settings={settings}
             setSettings={setSettings}

@@ -56,7 +56,7 @@ export async function POST(req: Request) {
 
     const groq = getGroqClient(apiKey.trim());
 
-    // 🔥 dynamic trimming
+    // 🔥 smarter trimming (token efficient)
     const trimmedTranscript = transcript
       .split(" ")
       .slice(-(contextWindow ? contextWindow * 40 : 120))
@@ -65,12 +65,30 @@ export async function POST(req: Request) {
     const isEarlyStage =
       !memory?.summary || (previousSuggestions?.length || 0) < 3;
 
-    // 🔥 FIXED PROMPT (customPrompt has FINAL authority)
+    // 🔥 CONTEXT SIGNAL DETECTION (NEW)
+    const lower = trimmedTranscript.toLowerCase();
+
+    const hasQuestion =
+      lower.includes("?") ||
+      /\b(what|why|how|when|should|can)\b/.test(lower);
+
+    const hasDecision =
+      /\b(decide|decision|final|choose|approve)\b/.test(lower);
+
+    const hasUncertainty =
+      /\b(not sure|unclear|maybe|guess)\b/.test(lower);
+
+    const hasClaim =
+      /\b(always|never|everyone|guarantee|100%)\b/.test(lower);
+
+    // 🔥 SUPER PROMPT (THIS IS YOUR EDGE)
     const SYSTEM_PROMPT = `
+${customPrompt || ""}
+
 You are an elite real-time meeting assistant.
 
-Your goal:
-Generate EXACTLY 3 high-value suggestions based on the conversation.
+Your job:
+Generate EXACTLY 3 highly useful suggestions.
 
 ---
 
@@ -79,19 +97,55 @@ ${trimmedTranscript}
 
 ---
 
-REQUIREMENTS:
+SITUATION ANALYSIS:
 
-Each suggestion must:
-- Be grounded in the transcript
-- Add NEW value (not rephrasing)
-- Be immediately useful in conversation
+${
+  hasQuestion
+    ? "- A question is being discussed → include an ANSWER or follow-up question"
+    : ""
+}
+${
+  hasDecision
+    ? "- A decision is being made → include an ACTION suggestion"
+    : ""
+}
+${
+  hasUncertainty
+    ? "- Discussion is unclear → include a CLARIFICATION question"
+    : ""
+}
+${
+  hasClaim
+    ? "- Strong claim detected → include a FACT-CHECK insight"
+    : ""
+}
 
-FORMAT (STRICT JSON):
+---
+
+TYPES (must mix intelligently):
+- question
+- insight
+- action
+
+---
+
+RULES:
+
+- EXACTLY 3 suggestions
+- Each suggestion MUST serve a DIFFERENT purpose
+- Avoid generic suggestions
+- Be specific to the transcript
+- Make preview useful even without clicking
+- Do NOT repeat previous suggestions
+
+---
+
+FORMAT (STRICT JSON ARRAY):
 
 [
   {
     "type": "question | insight | action",
-    "preview": "max 10 words",
+    "preview": "max 10 words, sharp and useful",
     "full": "clear, natural expansion",
     "score": 0-100
   }
@@ -99,24 +153,11 @@ FORMAT (STRICT JSON):
 
 ---
 
-QUALITY RULES:
-
-- Each suggestion MUST serve a different purpose
-- Avoid vague phrases
-- Avoid repetition
-- Avoid generic advice
-
----
-
-${isEarlyStage ? `
-EARLY STAGE:
-- Infer intelligently from limited context
-- Be specific
-` : `
-ADVANCED STAGE:
-- Build on discussion
-- Add depth or challenge assumptions
-`}
+${
+  isEarlyStage
+    ? "EARLY STAGE: Infer intelligently and avoid generic output."
+    : "ADVANCED STAGE: Build on discussion and add depth."
+}
 
 ---
 
@@ -124,11 +165,6 @@ AVOID:
 ${JSON.stringify(previousSuggestions || [])}
 
 ---
-
-USER INSTRUCTION (HIGHEST PRIORITY):
-${customPrompt || "Generate sharp, non-generic suggestions."}
-
-Follow the USER INSTRUCTION strictly.
 
 RETURN ONLY JSON ARRAY.
 `;
@@ -138,9 +174,9 @@ Transcript:
 ${trimmedTranscript}
 
 Focus on:
-- unclear areas
-- hidden assumptions
-- next steps
+- what is unclear
+- what matters most
+- what should happen next
 `;
 
     let response;
@@ -155,12 +191,9 @@ Focus on:
       });
     } catch (err: any) {
       if (err?.status === 429) {
-        const retry =
-          err?.headers?.get?.("retry-after") || "60";
-
         return NextResponse.json({
           error: "RATE_LIMIT",
-          retryAfter: Number(retry),
+          retryAfter: 60,
         });
       }
 
@@ -182,7 +215,7 @@ Focus on:
     let cleaned = parsed
       .slice(0, 6)
       .map((item: any) => ({
-        type: item?.type,
+        type: item?.type || "insight",
         preview: item?.preview?.trim(),
         full: item?.full?.trim(),
         score: Number(item?.score) || 50,
@@ -198,40 +231,36 @@ Focus on:
 
     for (const s of cleaned) {
       const normPreview = normalize(s.preview);
-      const normFull = normalize(s.full);
 
       const exists = final.some((f) =>
-        isSimilar(normPreview, normalize(f.preview)) ||
-        isSimilar(normFull, normalize(f.full))
+        isSimilar(normPreview, normalize(f.preview))
       );
 
-      if (!exists) {
-        final.push(s);
-      }
-
+      if (!exists) final.push(s);
       if (final.length === 3) break;
     }
 
     final.sort((a, b) => b.score - a.score);
 
-    if (final.length < 3) {
+    // 🔥 STRICT GUARANTEE
+    if (final.length !== 3) {
       return NextResponse.json([
         {
           type: "question",
-          preview: "What decision are we actually making?",
-          full: "Clarify the core decision this discussion is trying to reach.",
+          preview: "What decision are we making?",
+          full: "Clarify the core decision driving this discussion.",
           score: 85,
         },
         {
           type: "insight",
-          preview: "Discussion lacks clear direction",
-          full: "Points are being discussed, but no clear objective is defined.",
+          preview: "Context still unclear",
+          full: "The discussion lacks a clearly defined direction.",
           score: 75,
         },
         {
           type: "action",
-          preview: "Define next actionable step",
-          full: "Agree on one concrete next step before continuing discussion.",
+          preview: "Define next step",
+          full: "Agree on one concrete next step.",
           score: 90,
         },
       ]);

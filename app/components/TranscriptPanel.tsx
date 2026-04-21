@@ -32,17 +32,21 @@ export default function TranscriptPanel({
   const [autoScroll, setAutoScroll] = useState(true);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  const chunkIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const liveIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
   const isRecordingRef = useRef(false);
+  const isRestartingRef = useRef(false);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
-  // 🔥 API KEY
+  // 🔑 API KEY
   const apiKey = settings?.apiKey?.trim();
   const hasApiKey = !!apiKey && apiKey.length > 10;
 
-  // 🧠 SMART AUTO-SCROLL (FIXED)
+  // 🔥 SMART AUTO-SCROLL
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -52,7 +56,6 @@ export default function TranscriptPanel({
     }
   }, [transcriptChunks, liveText, autoScroll]);
 
-  // 👀 Detect manual scroll
   const handleScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
@@ -63,7 +66,7 @@ export default function TranscriptPanel({
     setAutoScroll(nearBottom);
   };
 
-  // 🧠 Send chunk
+  // 🧠 Transcription
   const handleTranscription = async (blob: Blob) => {
     if (!hasApiKey || blob.size === 0) return;
 
@@ -88,8 +91,12 @@ export default function TranscriptPanel({
       if (data.text) {
         setTranscriptChunks((prev) => [
           ...prev,
-          { text: data.text, timestamp: Date.now() },
+          {
+            text: data.text.trim(),
+            timestamp: Date.now(),
+          },
         ]);
+
         setLiveText("");
       }
     } catch (err) {
@@ -97,10 +104,13 @@ export default function TranscriptPanel({
     }
   };
 
+  // 🎤 START RECORDER
   const startRecorder = async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: true,
     });
+
+    streamRef.current = stream;
 
     const mediaRecorder = new MediaRecorder(stream);
 
@@ -111,9 +121,17 @@ export default function TranscriptPanel({
     };
 
     mediaRecorder.onstop = () => {
-      if (isRecordingRef.current) {
-        mediaRecorder.start();
-        mediaRecorderRef.current = mediaRecorder;
+      // 🔥 prevent duplicate restart loops
+      if (isRecordingRef.current && !isRestartingRef.current) {
+        isRestartingRef.current = true;
+
+        setTimeout(() => {
+          if (isRecordingRef.current) {
+            mediaRecorder.start();
+            mediaRecorderRef.current = mediaRecorder;
+          }
+          isRestartingRef.current = false;
+        }, 50);
       }
     };
 
@@ -121,6 +139,7 @@ export default function TranscriptPanel({
     mediaRecorderRef.current = mediaRecorder;
   };
 
+  // 🎯 TOGGLE RECORDING
   const handleToggleRecording = async () => {
     if (!hasApiKey) {
       alert("Set API key first!");
@@ -133,25 +152,38 @@ export default function TranscriptPanel({
       isRecordingRef.current = true;
       setIsRecording(true);
 
-      intervalRef.current = setInterval(() => {
-        if (mediaRecorderRef.current?.state === "recording") {
+      // 🔥 30s chunk cycle (STRICT)
+      chunkIntervalRef.current = setInterval(() => {
+        if (
+          mediaRecorderRef.current &&
+          mediaRecorderRef.current.state === "recording"
+        ) {
           mediaRecorderRef.current.stop();
         }
       }, 30000);
 
+      // ✨ live typing indicator
       liveIntervalRef.current = setInterval(() => {
-        setLiveText((prev) => prev + " .");
-      }, 2000);
+        setLiveText((prev) =>
+          prev.length > 20 ? "." : prev + "."
+        );
+      }, 1500);
     } else {
       isRecordingRef.current = false;
       setIsRecording(false);
 
       mediaRecorderRef.current?.stop();
 
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      if (liveIntervalRef.current) clearInterval(liveIntervalRef.current);
+      // 🔥 stop all mic tracks
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
 
-      intervalRef.current = null;
+      if (chunkIntervalRef.current)
+        clearInterval(chunkIntervalRef.current);
+      if (liveIntervalRef.current)
+        clearInterval(liveIntervalRef.current);
+
+      chunkIntervalRef.current = null;
       liveIntervalRef.current = null;
 
       setLiveText("");
@@ -162,22 +194,27 @@ export default function TranscriptPanel({
   useEffect(() => {
     return () => {
       mediaRecorderRef.current?.stop();
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      if (liveIntervalRef.current) clearInterval(liveIntervalRef.current);
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+
+      if (chunkIntervalRef.current)
+        clearInterval(chunkIntervalRef.current);
+      if (liveIntervalRef.current)
+        clearInterval(liveIntervalRef.current);
     };
   }, []);
 
   return (
     <div className="border rounded-xl p-4 h-full flex flex-col min-h-0">
-
-      {/* 🔥 FIXED HEADER */}
+      {/* HEADER (fixed) */}
       <div className="flex-shrink-0">
         <h2 className="font-semibold mb-2">Transcript</h2>
 
         <button
           onClick={handleToggleRecording}
-          className={`px-3 py-2 rounded ${
-            isRecording ? "bg-red-600" : "bg-blue-600"
+          className={`px-3 py-2 rounded transition ${
+            isRecording
+              ? "bg-red-600 hover:bg-red-500"
+              : "bg-blue-600 hover:bg-blue-500"
           }`}
         >
           {isRecording ? "Stop Recording" : "Start Mic"}
@@ -190,7 +227,7 @@ export default function TranscriptPanel({
         )}
       </div>
 
-      {/* 🔥 ISOLATED SCROLL AREA */}
+      {/* SCROLL AREA */}
       <div
         ref={scrollRef}
         onScroll={handleScroll}

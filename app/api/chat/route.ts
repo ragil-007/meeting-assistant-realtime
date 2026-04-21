@@ -1,6 +1,7 @@
 import { getGroqClient } from "@/lib/groq";
 import { MODEL } from "@/lib/constants";
 
+// 🔥 strict sentence enforcement
 function enforceExactSentences(text: string, customPrompt?: string) {
   if (!customPrompt) return text;
 
@@ -10,7 +11,6 @@ function enforceExactSentences(text: string, customPrompt?: string) {
   const target = Number(match[1]);
   if (!target || target <= 0) return text;
 
-  // naive sentence split (works well enough for your use-case)
   let sentences = text
     .replace(/\n+/g, " ")
     .split(/(?<=[.!?])\s+/)
@@ -21,13 +21,21 @@ function enforceExactSentences(text: string, customPrompt?: string) {
 
   if (sentences.length > target) {
     sentences = sentences.slice(0, target);
-  } else {
+  }
+
+  if (sentences.length < target) {
+    const last = sentences[sentences.length - 1];
     while (sentences.length < target) {
-      sentences.push(sentences[sentences.length - 1]);
+      sentences.push(last);
     }
   }
 
-  return sentences.join(" ");
+  return sentences.join(" ").replace(/\s+/g, " ").trim();
+}
+
+// 🔥 remove repeated phrases/sentences
+function cleanRepetition(text: string) {
+  return text.replace(/(.+?)\s+\1+/g, "$1");
 }
 
 export async function POST(req: Request) {
@@ -46,7 +54,7 @@ export async function POST(req: Request) {
 
     const groq = getGroqClient(apiKey.trim());
 
-    // ✅ keep last N messages
+    // ✅ limit history
     const safeMessages = (messages || [])
       .slice(-6)
       .map((m: any) => ({
@@ -68,34 +76,34 @@ export async function POST(req: Request) {
       .slice(-(contextWindow || 5))
       .join("\n");
 
-    // 🔥 FINAL PROMPT (no conflicting rules)
+    // 🔥 CLEAN + DOMINANT PROMPT
     const SYSTEM_PROMPT = `
 You are a real-time meeting assistant.
-
-TASK:
-${
-  isSuggestion
-    ? "Expand the selected suggestion into a response the user can say."
-    : "Answer the user's question based on the conversation."
-}
 
 CONTEXT:
 ${trimmedTranscript}
 
 ---
 
-STRICT INSTRUCTION (MUST FOLLOW EXACTLY):
-${customPrompt || "Respond clearly."}
+TASK:
+${
+  isSuggestion
+    ? "Expand the selected suggestion into something the user can say out loud."
+    : "Answer the user's question based on the conversation."
+}
 
 ---
 
-CRITICAL RULES:
-- Follow the STRICT INSTRUCTION exactly
-- Do NOT override it
-- Do NOT add extra sentences
-- Do NOT add labels or prefixes
-- If instruction says "exactly N sentences", output EXACTLY N sentences
-- If unsure, say "Not enough context"
+CRITICAL:
+You MUST follow the USER INSTRUCTION exactly.
+Do NOT override it.
+Do NOT add extra sentences.
+Do NOT add labels or prefixes.
+
+---
+
+USER INSTRUCTION:
+${customPrompt || "Respond clearly."}
 `;
 
     let stream;
@@ -145,7 +153,7 @@ CRITICAL RULES:
 
               if (!content) continue;
 
-              // sanitize unwanted labels
+              // sanitize labels
               content = content
                 .replace(/HIGH SIGNAL:\s*/gi, "")
                 .replace(/LOW NOISE:\s*/gi, "")
@@ -160,7 +168,8 @@ CRITICAL RULES:
                 "Not enough context to give a useful answer.";
             }
 
-            // 🔥 enforce EXACT sentence count
+            // 🔥 CLEAN + ENFORCE
+            finalText = cleanRepetition(finalText);
             finalText = enforceExactSentences(
               finalText,
               customPrompt

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import {
   Message,
   TranscriptChunk,
@@ -48,35 +48,26 @@ export default function SuggestionsPanel({
   settings,
 }: Props) {
   const safeChunks = transcriptChunks ?? [];
+
   const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<"idle" | "analyzing" | "updated">("idle");
 
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-
-  const lastProcessedIndexRef = useRef<number>(-1);
   const lastSourceHashRef = useRef<string>("");
-  const memoryCounterRef = useRef(0);
-  const lastFetchTimeRef = useRef(0);
+  const hasGeneratedFirst = useRef(false);
+  const lastRunRef = useRef(0);
 
-  // 🔑 API KEY
+  const chunksRef = useRef<TranscriptChunk[]>([]);
+  useEffect(() => {
+    chunksRef.current = safeChunks;
+  }, [safeChunks]);
+
   const apiKey = settings.apiKey?.trim();
   const hasApiKey = !!apiKey && apiKey.length > 10;
 
   const normalize = (text: string) =>
     text.toLowerCase().replace(/[^\w\s]/g, "").trim();
 
-  const typeLabelMap: Record<string, string> = {
-    question: "❓ Question",
-    insight: "🧠 Insight",
-    action: "⚡ Action",
-  };
-
-  const safeTypeLabel = (type?: string) =>
-    typeLabelMap[type || ""] || "ℹ️ Info";
-
-  const safeTypeTag = (type?: string) =>
-    (type || "info").toUpperCase();
-
-  // 🧠 MEMORY
+  // 🔥 MEMORY
   const updateMemory = async (latestText: string) => {
     if (!latestText || latestText.length < 30) return;
     if (!hasApiKey) return;
@@ -106,123 +97,137 @@ export default function SuggestionsPanel({
     }
   };
 
-  // 🔁 AUTO GENERATION
+  const fetchSuggestions = useCallback(
+    async (segmentText: string, force = false) => {
+      if (!hasApiKey || loading) return;
+
+      const now = Date.now();
+
+      // 🔥 throttle protection
+      if (!force && now - lastRunRef.current < 25000) return;
+      lastRunRef.current = now;
+
+      const sourceHash = normalize(segmentText);
+
+      const MIN_CHANGE_LENGTH = 40;
+
+      if (!force && lastSourceHashRef.current) {
+        const prev = lastSourceHashRef.current;
+        const diff = sourceHash.replace(prev, "");
+
+        if (diff.length < MIN_CHANGE_LENGTH) {
+          return;
+        }
+      }
+
+      lastSourceHashRef.current = sourceHash;
+
+      setLoading(true);
+      setStatus("analyzing");
+
+      try {
+        const res = await fetch("/api/suggestions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            transcript: segmentText,
+            memory,
+            previousSuggestions: suggestionBatches
+              .flatMap((b) => b.items)
+              .slice(0, 15),
+            apiKey,
+            customPrompt: settings.suggestionPrompt,
+            contextWindow: settings.suggestionContext,
+          }),
+        });
+
+        if (!res.ok || res.status === 429) return;
+
+        const data = await res.json();
+        if (!Array.isArray(data)) return;
+
+        const cleaned: Suggestion[] = data
+          .slice(0, 3)
+          .map((s: any) => ({
+            type: s?.type || "info",
+            preview: s?.preview || s?.text || "No preview",
+            full:
+              s?.full ||
+              s?.text ||
+              s?.preview ||
+              "No content",
+            score: Number(s?.score) || 50,
+          }));
+
+        if (cleaned.length !== 3) return;
+
+        const newBatch: SuggestionBatch = {
+          id: Date.now(),
+          timestamp: Date.now(),
+          items: cleaned.sort((a, b) => b.score - a.score),
+          sourceHash,
+        };
+
+        setSuggestionBatches((prev) => [newBatch, ...prev]);
+
+        updateMemory(segmentText);
+
+        // ✅ UX feedback
+        setStatus("updated");
+        setTimeout(() => setStatus("idle"), 2000);
+      } catch (err) {
+        console.error("Suggestions error:", err);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [hasApiKey, loading, memory, suggestionBatches, settings]
+  );
+
+  // 🔥 FIRST TRIGGER (instant, no delay)
   useEffect(() => {
-    if (!isRecording || !hasApiKey || safeChunks.length === 0) return;
-
-    const latestIndex = safeChunks.length - 1;
-    if (latestIndex === lastProcessedIndexRef.current) return;
-
-    lastProcessedIndexRef.current = latestIndex;
+    if (!hasApiKey) return;
+    if (!isRecording) return;
 
     const contextSize = settings.suggestionContext || 5;
 
-    const combinedText = safeChunks
+    const combined = safeChunks
       .slice(-contextSize)
       .map((c) => c.text)
       .join(" ");
 
-    if (combinedText.length < 30) return;
-
-    fetchSuggestions(combinedText);
-
-    memoryCounterRef.current++;
-    if (memoryCounterRef.current % 2 === 0) {
-      updateMemory(combinedText);
+    if (
+      combined.length > 80 &&
+      !hasGeneratedFirst.current
+    ) {
+      fetchSuggestions(combined, true);
+      hasGeneratedFirst.current = true;
     }
-  }, [safeChunks, isRecording, settings.suggestionContext, hasApiKey]);
+  }, [safeChunks, isRecording]);
 
-  // ⏱ INTERVAL BACKUP
+  // 🔥 TRUE 30s LOOP
   useEffect(() => {
-    if (!isRecording || !hasApiKey) return;
+    if (!hasApiKey) return;
+    if (!isRecording) return;
 
     const interval = setInterval(() => {
-      if (safeChunks.length === 0) return;
+      const chunks = chunksRef.current;
+      if (!chunks || chunks.length === 0) return;
 
       const contextSize = settings.suggestionContext || 5;
 
-      const combined = safeChunks
+      const combined = chunks
         .slice(-contextSize)
         .map((c) => c.text)
         .join(" ");
 
-      if (combined.length > 30) {
-        fetchSuggestions(combined, true);
+      if (combined.length > 50) {
+        fetchSuggestions(combined);
       }
-    }, 20000);
+    }, 30000);
 
     return () => clearInterval(interval);
-  }, [safeChunks, isRecording, settings.suggestionContext, hasApiKey]);
-
-  // 🚀 FETCH
-  const fetchSuggestions = async (
-    segmentText: string,
-    force = false
-  ) => {
-    if (!hasApiKey) return;
-
-    const now = Date.now();
-    if (!force && now - lastFetchTimeRef.current < 3500) return;
-    lastFetchTimeRef.current = now;
-
-    const sourceHash = normalize(segmentText);
-    if (!force && sourceHash === lastSourceHashRef.current) return;
-    lastSourceHashRef.current = sourceHash;
-
-    setLoading(true);
-
-    try {
-      const res = await fetch("/api/suggestions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          transcript: segmentText,
-          memory,
-          previousSuggestions: suggestionBatches
-            .flatMap((b) => b.items)
-            .slice(0, 15),
-          apiKey,
-          customPrompt: settings.suggestionPrompt,
-          contextWindow: settings.suggestionContext,
-          force,
-        }),
-      });
-
-      if (!res.ok || res.status === 429) return;
-
-      const data = await res.json();
-      if (!Array.isArray(data)) return;
-
-      const cleaned: Suggestion[] = data
-        .slice(0, 3)
-        .map((s: any) => ({
-          type: s?.type || "info",
-          preview:
-            s?.preview ||
-            s?.text ||
-            "No preview available",
-          full:
-            s?.full ||
-            s?.text ||
-            s?.preview ||
-            "No content available",
-          score: Number(s?.score) || 50,
-        }));
-
-      const newBatch: SuggestionBatch = {
-        id: Date.now(),
-        timestamp: Date.now(),
-        items: cleaned.sort((a, b) => b.score - a.score),
-        sourceHash,
-      };
-
-      setSuggestionBatches((prev) => [newBatch, ...prev]);
-    } catch (err) {
-      console.error("Suggestions error:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [hasApiKey, isRecording, settings.suggestionContext, fetchSuggestions]);
 
   // 💬 CLICK
   const handleSuggestionClick = async (suggestion: Suggestion) => {
@@ -240,9 +245,7 @@ export default function SuggestionsPanel({
 
     const userMessage: Message = {
       role: "user",
-      content: `[${safeTypeTag(suggestion?.type)}] ${
-        suggestion?.full || suggestion?.preview
-      }`,
+      content: `[${suggestion.type.toUpperCase()}] ${suggestion.full}`,
       timestamp: Date.now(),
     };
 
@@ -292,8 +295,7 @@ export default function SuggestionsPanel({
         ...prev,
         {
           role: "assistant",
-          content:
-            "⚠️ Failed to generate response. Please try again.",
+          content: "⚠️ Failed to generate response.",
           timestamp: Date.now(),
         },
       ]);
@@ -302,8 +304,6 @@ export default function SuggestionsPanel({
 
   return (
     <div className="border rounded-xl p-4 h-full flex flex-col min-h-0">
-
-      {/* 🔥 FIXED HEADER */}
       <div className="flex-shrink-0">
         <h2 className="font-semibold mb-2">Suggestions</h2>
 
@@ -314,30 +314,35 @@ export default function SuggestionsPanel({
               return;
             }
 
-            if (safeChunks.length > 0) {
-              const contextSize =
-                settings.suggestionContext || 5;
+            const combined = safeChunks
+              .slice(-(settings.suggestionContext || 5))
+              .map((c) => c.text)
+              .join(" ");
 
-              const combined = safeChunks
-                .slice(-contextSize)
-                .map((c) => c.text)
-                .join(" ");
-
-              fetchSuggestions(combined, true);
-            }
+            fetchSuggestions(combined, true);
           }}
           disabled={loading || safeChunks.length === 0}
-          className="bg-gray-700 px-3 py-1 rounded mb-3 hover:bg-gray-600 disabled:opacity-50"
+          className="bg-gray-700 px-3 py-1 rounded mb-2 hover:bg-gray-600 disabled:opacity-50"
         >
           {loading ? "Generating..." : "Refresh"}
         </button>
+
+        {/* 🔥 UX STATUS */}
+        <div className="text-xs text-gray-400 mb-2">
+          {status === "analyzing" && "🧠 Analyzing context..."}
+          {status === "updated" && "✅ Suggestions updated"}
+        </div>
       </div>
 
-      {/* 🔥 SCROLL ONLY THIS */}
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto space-y-5 pr-1 min-h-0"
-      >
+      <div className="flex-1 overflow-y-auto space-y-5 pr-1 min-h-0">
+        {suggestionBatches.length === 0 && (
+          <p className="text-sm text-gray-500">
+            {loading
+              ? "Analyzing conversation..."
+              : "Suggestions will appear here..."}
+          </p>
+        )}
+
         {suggestionBatches.map((batch) => (
           <div key={batch.id} className="space-y-2">
             <div className="text-xs text-gray-500">
@@ -359,7 +364,7 @@ export default function SuggestionsPanel({
                 </p>
 
                 <span className="text-xs text-blue-400 uppercase mt-1 inline-block">
-                  {safeTypeLabel(s.type)}
+                  {s.type}
                 </span>
 
                 {i === 0 && (

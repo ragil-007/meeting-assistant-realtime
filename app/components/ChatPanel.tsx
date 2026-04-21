@@ -52,7 +52,7 @@ export default function ChatPanel({
     return recentChunks.map((t) => t.text).join("\n");
   }, [safeChunks, settings.chatContext]);
 
-  // 🔥 FIXED AUTO-SCROLL (NO PAGE JUMP)
+  // 🔥 SMART AUTO-SCROLL
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -60,9 +60,8 @@ export default function ChatPanel({
     if (autoScroll) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [visibleMessages, loading, autoScroll]);
+  }, [visibleMessages, autoScroll]);
 
-  // 👀 Detect manual scroll
   const handleScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
@@ -73,6 +72,7 @@ export default function ChatPanel({
     setAutoScroll(nearBottom);
   };
 
+  // 🚀 SEND MESSAGE
   const handleSend = async () => {
     if (!input.trim() || loading || isStreamingRef.current) return;
 
@@ -87,7 +87,7 @@ export default function ChatPanel({
       timestamp: Date.now(),
     };
 
-    const updatedMessages: Message[] = [...messages, userMessage];
+    const updatedMessages = [...messages, userMessage];
     setMessages(updatedMessages);
 
     setInput("");
@@ -138,6 +138,7 @@ export default function ChatPanel({
 
       let finalText = "";
 
+      // 🔥 show assistant bubble instantly
       const assistantMessage: Message = {
         role: "assistant",
         content: "",
@@ -165,6 +166,7 @@ export default function ChatPanel({
         });
       }
 
+      // 🔥 fallback
       if (!finalText.trim()) {
         setMessages((prev) => {
           const updated = [...prev];
@@ -205,7 +207,7 @@ export default function ChatPanel({
   return (
     <div className="border rounded-xl p-4 h-full flex flex-col min-h-0">
 
-      {/* 🔥 FIXED HEADER */}
+      {/* HEADER */}
       <div className="flex justify-between items-center mb-3 flex-shrink-0">
         <h2 className="font-semibold">Chat</h2>
 
@@ -226,7 +228,7 @@ export default function ChatPanel({
         </div>
       </div>
 
-      {/* 💬 SCROLL ONLY THIS */}
+      {/* CHAT AREA */}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
@@ -251,14 +253,15 @@ export default function ChatPanel({
           ))
         )}
 
+        {/* 🔥 streaming indicator */}
         {loading && (
-          <div className="text-gray-400 text-sm">
-            Thinking...
+          <div className="text-gray-400 text-xs">
+            Assistant is typing...
           </div>
         )}
       </div>
 
-      {/* 🔥 FIXED INPUT */}
+      {/* INPUT */}
       <div className="flex gap-2 mt-1 flex-shrink-0">
         <input
           value={input}
