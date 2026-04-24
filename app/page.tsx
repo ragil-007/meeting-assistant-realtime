@@ -199,7 +199,7 @@ Answer clearly and concisely.
             suggestionBatches={suggestionBatches}
             setSuggestionBatches={setSuggestionBatches}
             memory={memory}
-            setMemory={setMemory}
+            //setMemory={setMemory}
             isRecording={isRecording}
             settings={settings}
           />
