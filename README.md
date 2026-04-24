@@ -8,6 +8,12 @@ Built as a take-home assignment for [TwinMind](https://twinmind.com).
 
 ---
 
+## 🔗 Live Demo
+
+🚀 Try the app here:
+https://meeting-assistant-realtime-letz.vercel.app/
+
+
 ## What It Does
 
 **Transcript (left column)** — Captures live mic audio and transcribes it in chunks using Whisper Large V3 via Groq. Auto-scrolls as new content arrives.
