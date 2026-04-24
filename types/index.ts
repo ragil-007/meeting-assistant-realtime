@@ -4,17 +4,18 @@ export type TranscriptChunk = {
 };
 
 export type Suggestion = {
-  type: "question" | "insight" | "action";
+  type: "question" | "insight" | "action" | "fact-check" | "answer";
   preview: string;
   full: string;
-  score: number; // ✅ NEW
+  score?: number;
 };
 
 export type SuggestionBatch = {
   id: number;
   timestamp: number;
   items: Suggestion[];
-  sourceHash: string; // 🔥 REQUIRED (for dedupe logic)
+  sourceHash?: string;
+  wasRateLimited?: boolean;
 };
 
 export type Message = {
